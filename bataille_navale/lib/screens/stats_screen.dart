@@ -24,35 +24,57 @@ class _StatsScreenState extends State<StatsScreen> {
 
   PlayerStatisticsAggregate? playerStats;
   List<GameStatistics>? gameStats;
+  bool isLoading = false;
 
   @override
   void initState() {
     super.initState();
+    print('[STATS] Init avec playerId: ${widget.playerId}');
     _statsFuture = _loadStats();
   }
 
   Future<void> _loadStats() async {
-    final firebase = context.read<FirebaseService>();
+    if (isLoading) return;
+    
+    setState(() => isLoading = true);
+    final mongoService = MongoDBService();
     final analytics = context.read<AnalyticsService>();
 
     try {
-      final allStatsRaw = await firebase.getAllGameStats(widget.playerId);
-      final allStats = allStatsRaw.map((stat) {
-        if (stat is GameStatistics) {
-          return stat;
-        }
-        // Conversion si nécessaire
-        return GameStatistics.fromJson(stat as Map<String, dynamic>);
-      }).toList();
+      print('[STATS] Chargement des stats pour ${widget.playerId}...');
+      
+      // Charger depuis MongoDB au lieu de Firebase
+      await mongoService.initialize();
+      final allStats = await mongoService.getPlayerStatistics(widget.playerId);
+      
+      print('[STATS] ${allStats.length} parties chargées');
+
+      if (allStats.isEmpty) {
+        print('[STATS] ⚠️ Aucune partie trouvée pour $widget.playerId');
+        setState(() {
+          playerStats = null;
+          gameStats = [];
+          isLoading = false;
+        });
+        return;
+      }
 
       final aggregate = await analytics.buildPlayerStatistics(widget.playerId, allStats);
 
+      print('[STATS] ✅ Stats agrégées: ${aggregate.totalGames} parties');
+      
       setState(() {
         playerStats = aggregate;
         gameStats = allStats;
+        isLoading = false;
       });
     } catch (e) {
-      print('Erreur chargement stats: $e');
+      print('❌ Erreur chargement stats: $e');
+      setState(() {
+        playerStats = null;
+        gameStats = [];
+        isLoading = false;
+      });
     }
   }
 
@@ -63,39 +85,104 @@ class _StatsScreenState extends State<StatsScreen> {
       body: FutureBuilder(
         future: _statsFuture,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+          // Afficher le loader pendant le chargement initial
+          if (snapshot.connectionState == ConnectionState.waiting && playerStats == null) {
             return Center(child: CircularProgressIndicator());
           }
 
-          if (playerStats == null) {
-            return Center(child: Text('Aucune statistique disponible'));
+          // Afficher message si aucune donnée
+          if (playerStats == null || gameStats == null || gameStats!.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.data_usage, size: 48, color: Colors.grey),
+                  SizedBox(height: 16),
+                  Text('Aucune statistique disponible'),
+                  SizedBox(height: 8),
+                  Text(
+                    'PlayerId: ${widget.playerId}',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                  SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      print('[STATS] Rafraîchissement manuel depuis écran vide...');
+                      setState(() {
+                        _statsFuture = _loadStats();
+                      });
+                    },
+                    icon: Icon(Icons.refresh),
+                    label: Text('Rafraîchir'),
+                  ),
+                ],
+              ),
+            );
           }
 
-          return SingleChildScrollView(
-            padding: EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildOverviewCard(),
-                SizedBox(height: 24),
-                _buildAccuracyCard(),
-                SizedBox(height: 24),
-                _buildWinRateCard(),
-                SizedBox(height: 24),
-                _buildHotspotCard(),
-                SizedBox(height: 24),
-                // Nouvelles sections analytiques
-                _buildAttackHeatmapSection(),
-                SizedBox(height: 24),
-                _buildWinRateChartSection(),
-                SizedBox(height: 24),
-                _buildShipAnalysisSection(),
-                SizedBox(height: 24),
-                _buildAITrainingCard(),
-              ],
+          // Afficher les statistiques
+          return RefreshIndicator(
+            onRefresh: () async {
+              print('[STATS] Rafraîchissement via pull-down...');
+              await _loadStats();
+            },
+            child: SingleChildScrollView(
+              physics: AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Statistiques',
+                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            '${gameStats!.length} parties',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.refresh),
+                        onPressed: () {
+                          print('[STATS] Rafraîchissement manuel (bouton)...');
+                          setState(() {
+                            _statsFuture = _loadStats();
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 16),
+                  _buildOverviewCard(),
+                  SizedBox(height: 24),
+                  _buildAccuracyCard(),
+                  SizedBox(height: 24),
+                  _buildWinRateCard(),
+                  SizedBox(height: 24),
+                  _buildDuelMetricsCard(),
+                  SizedBox(height: 24),
+                  _buildHotspotCard(),
+                  SizedBox(height: 24),
+                  // Nouvelles sections analytiques
+                  _buildAttackHeatmapSection(),
+                  SizedBox(height: 24),
+                  _buildWinRateChartSection(),
+                  SizedBox(height: 24),
+                  _buildShipAnalysisSection(),
+                  SizedBox(height: 24),
+                  _buildAITrainingCard(),
+                ],
+              ),
             ),
           );
-        },
+        }
       ),
     );
   }
@@ -228,6 +315,128 @@ class _StatsScreenState extends State<StatsScreen> {
         ),
       ),
     );
+  }
+
+  /// Métriques détaillées des duels
+  Widget _buildDuelMetricsCard() {
+    if (gameStats == null || gameStats!.isEmpty) {
+      return SizedBox.shrink();
+    }
+
+    final metrics = _calculateDuelMetrics();
+
+    return Card(
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '⚔️ Analyse des duels',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 16),
+            // Durée moyenne
+            _buildMetricRow('⏱️ Durée moyenne', metrics['averageDuration']),
+            _buildMetricRow('📊 Durée min/max', metrics['durationRange']),
+            _buildMetricRow('🎯 Coups par minute', metrics['movesPerMinute']),
+            _buildMetricRow('💢 Coups moyens/partie', metrics['averageMoves']),
+            _buildMetricRow('🎪 Taux de précision moyen', metrics['averageAccuracy']),
+            _buildMetricRow('⚡ Navires coulés/victoire', metrics['shipsPerWin']),
+            SizedBox(height: 12),
+            Divider(color: Colors.grey.shade300),
+            SizedBox(height: 12),
+            Text(
+              'Statistiques de performance',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blue.shade700),
+            ),
+            SizedBox(height: 8),
+            _buildMetricRow('🏆 Victoires rapides', metrics['quickWins']),
+            _buildMetricRow('🐢 Victoires longues', metrics['longWins']),
+            _buildMetricRow('⚠️ Défaites rapides', metrics['quickLosses']),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricRow(String label, String? value) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+          Text(
+            value ?? '-',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: Colors.blue.shade700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Calcule les métriques de duel
+  Map<String, String> _calculateDuelMetrics() {
+    if (gameStats == null || gameStats!.isEmpty) {
+      return {};
+    }
+
+    final games = gameStats!;
+    final totalDuration = games.fold<Duration>(
+      Duration.zero,
+      (sum, game) => sum + game.gameDuration,
+    );
+    final averageDuration = totalDuration.inSeconds ~/ games.length;
+    
+    // Durée min/max
+    final durations = games.map((g) => g.gameDuration.inSeconds).toList();
+    durations.sort();
+    final minDuration = durations.first;
+    final maxDuration = durations.last;
+    
+    // Coups par minute
+    final totalMoves = games.fold<int>(0, (sum, g) => sum + g.totalMoves);
+    final totalMinutes = totalDuration.inSeconds / 60;
+    final movesPerMinute = (totalMoves / (totalMinutes > 0 ? totalMinutes : 1)).toStringAsFixed(1);
+    
+    // Coups moyens
+    final averageMoves = (totalMoves / games.length).toStringAsFixed(1);
+    
+    // Précision moyenne
+    final averageAccuracy = (games.fold<double>(0, (sum, g) => sum + g.accuracy) / games.length).toStringAsFixed(1);
+    
+    // Navires coulés par victoire
+    final winGames = games.where((g) => g.won).toList();
+    final totalShipsDestroyed = winGames.fold<int>(0, (sum, g) => sum + g.shipsDestroyed);
+    final shipsPerWin = winGames.isNotEmpty 
+        ? (totalShipsDestroyed / winGames.length).toStringAsFixed(1)
+        : '0';
+    
+    // Victoires rapides (moins de 2 minutes)
+    final quickWins = games.where((g) => g.won && g.gameDuration.inSeconds < 120).length;
+    
+    // Victoires longues (plus de 5 minutes)
+    final longWins = games.where((g) => g.won && g.gameDuration.inSeconds > 300).length;
+    
+    // Défaites rapides
+    final quickLosses = games.where((g) => !g.won && g.gameDuration.inSeconds < 120).length;
+
+    return {
+      'averageDuration': '${(averageDuration ~/ 60)}m ${averageDuration % 60}s',
+      'durationRange': '${minDuration ~/ 60}m - ${maxDuration ~/ 60}m',
+      'movesPerMinute': '$movesPerMinute coups/min',
+      'averageMoves': '$averageMoves coups',
+      'averageAccuracy': '$averageAccuracy%',
+      'shipsPerWin': '$shipsPerWin navires',
+      'quickWins': '$quickWins parties < 2min',
+      'longWins': '$longWins parties > 5min',
+      'quickLosses': '$quickLosses défaites < 2min',
+    };
   }
 
   Widget _buildHotspotCard() {

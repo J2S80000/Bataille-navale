@@ -27,33 +27,85 @@ class MongoDBService {
     }
   }
 
-  /// Save game statistics to MongoDB via REST API
+  /// Save game statistics to MongoDB via REST API with retry logic
   Future<bool> saveGameStatistics(GameStatistics stats) async {
     if (!kIsWeb) return false;
 
-    try {
-      final payload = stats.toJson();
-      payload['timestamp'] = DateTime.now().toIso8601String();
+    int retries = 0;
+    const maxRetries = 2;
 
+    while (retries <= maxRetries) {
+      try {
+        final payload = stats.toJson();
+        payload['timestamp'] = DateTime.now().toIso8601String();
+
+        final response = await http.post(
+          Uri.parse('$_baseUrl/game_statistics'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ).timeout(_timeout);
+
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          print('[MONGODB] ✓ Statistic saved: ${stats.gameId}');
+          return true;
+        }
+        
+        // If server error, retry
+        if (response.statusCode >= 500) {
+          retries++;
+          if (retries <= maxRetries) {
+            print('[MONGODB] Retry ${retries}/${maxRetries} for ${stats.gameId}');
+            await Future.delayed(Duration(milliseconds: 200 * retries));
+            continue;
+          }
+        }
+        
+        print('[MONGODB] ⚠ Unexpected response: ${response.statusCode}');
+        return false;
+      } catch (e) {
+        retries++;
+        if (retries <= maxRetries) {
+          print('[MONGODB] Retry ${retries}/${maxRetries}: $e');
+          await Future.delayed(Duration(milliseconds: 200 * retries));
+          continue;
+        }
+        print('[MONGODB] ✗ Failed to save statistics after $maxRetries retries: $e');
+        return false;
+      }
+    }
+    
+    return false;
+  }
+
+  /// Sauvegarde plusieurs parties d'un coup (batch) - BEAUCOUP PLUS RAPIDE
+  Future<Map<String, dynamic>> saveGameStatisticsBatch(List<GameStatistics> stats) async {
+    if (!kIsWeb) return {'savedCount': 0, 'failedCount': 0};
+
+    try {
+      final payload = stats.map((s) => s.toJson()).toList();
+      
       final response = await http.post(
-        Uri.parse('$_baseUrl/game_statistics'),
+        Uri.parse('$_baseUrl/game_statistics/batch'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload),
       ).timeout(_timeout);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        print('✓ Statistic saved: ${stats.gameId}');
-        return true;
+        final result = jsonDecode(response.body);
+        print('[MONGODB] ✓ Batch sauvegardé: ${result['insertedCount']}/${stats.length} parties');
+        return {
+          'savedCount': result['insertedCount'] ?? 0,
+          'failedCount': stats.length - (result['insertedCount'] ?? 0),
+        };
       }
-      print('⚠ Unexpected response: ${response.statusCode}');
-      return false;
+      
+      print('[MONGODB] ✗ Batch failed: ${response.statusCode}');
+      return {'savedCount': 0, 'failedCount': stats.length};
     } catch (e) {
-      print('⚠ Failed to save statistics: $e');
-      return false;
+      print('[MONGODB] ✗ Batch error: $e');
+      return {'savedCount': 0, 'failedCount': stats.length};
     }
   }
-
-  /// Get all game statistics from MongoDB
   Future<List<GameStatistics>> getAllGameStatistics() async {
     if (!kIsWeb) return [];
 
@@ -63,7 +115,11 @@ class MongoDBService {
       ).timeout(_timeout);
 
       if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
+        final Map<String, dynamic> responseData = jsonDecode(response.body);
+        
+        // L'API retourne { data: [...], total, limit, skip, hasMore }
+        final List<dynamic> data = responseData['data'] ?? [];
+        
         return data
             .map((e) => GameStatistics.fromJson(e as Map<String, dynamic>))
             .toList();
@@ -75,24 +131,66 @@ class MongoDBService {
     }
   }
 
-  /// Get statistics for a specific player
+  /// Get statistics for a specific player - loads ALL records with pagination
   Future<List<GameStatistics>> getPlayerStatistics(String playerId) async {
     if (!kIsWeb) return [];
 
     try {
-      final response = await http.get(
-        Uri.parse('$_baseUrl/game_statistics?playerId=$playerId'),
-      ).timeout(_timeout);
+      print('[MONGODB] Fetching ALL stats for playerId: $playerId');
+      
+      List<GameStatistics> allStats = [];
+      int skip = 0;
+      const int limit = 5000; // Max per request
+      bool hasMore = true;
 
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        return data
-            .map((e) => GameStatistics.fromJson(e as Map<String, dynamic>))
-            .toList();
+      while (hasMore) {
+        print('[MONGODB] Fetching batch: skip=$skip, limit=$limit');
+        
+        final response = await http.get(
+          Uri.parse('$_baseUrl/game_statistics?playerId=$playerId&limit=$limit&skip=$skip'),
+        ).timeout(_timeout);
+
+        if (response.statusCode == 200) {
+          final dynamic decodedBody = jsonDecode(response.body);
+          
+          // Gérer les deux cas: direct array ou objet avec data
+          List<dynamic> data = [];
+          int total = 0;
+          
+          if (decodedBody is List) {
+            data = decodedBody;
+            hasMore = false;
+          } else if (decodedBody is Map) {
+            data = decodedBody['data'] ?? [];
+            total = decodedBody['total'] ?? 0;
+            hasMore = decodedBody['hasMore'] ?? false;
+            
+            print('[MONGODB] Response: ${data.length} records, total=$total, hasMore=$hasMore');
+          }
+          
+          // Convertir et ajouter
+          for (final item in data) {
+            try {
+              final stat = GameStatistics.fromJson(item as Map<String, dynamic>);
+              allStats.add(stat);
+            } catch (e) {
+              print('[MONGODB] ⚠ Error parsing item: $e');
+            }
+          }
+          
+          if (!hasMore) break;
+          skip += limit;
+        } else {
+          print('[MONGODB] Status ${response.statusCode}: ${response.body}');
+          break;
+        }
       }
-      return [];
-    } catch (e) {
+      
+      print('[MONGODB] ✓ Loaded ${allStats.length} total records');
+      return allStats;
+    } catch (e, stackTrace) {
       print('⚠ Failed to fetch player statistics: $e');
+      print('Stack trace: $stackTrace');
       return [];
     }
   }

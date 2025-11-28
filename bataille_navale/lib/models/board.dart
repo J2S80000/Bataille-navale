@@ -93,6 +93,15 @@ class Board extends Equatable {
   /// Retorna vrai si tous les navires sont coulés
   bool get allShipsSunk => ships.isNotEmpty && sunkShips == ships.length;
 
+  /// Retourne toutes les positions des navires
+  List<(int, int)> getAllShipPositions() {
+    final positions = <(int, int)>[];
+    for (final ship in ships) {
+      positions.addAll(ship.cells);
+    }
+    return positions;
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'grid': grid.map((row) => row.map((cell) => cell.toJson()).toList()).toList(),

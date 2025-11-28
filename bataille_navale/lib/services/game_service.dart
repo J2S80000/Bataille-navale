@@ -280,6 +280,10 @@ class GameService {
       misses: misses,
       hitPositions: hitPositions,
       missPositions: missPositions,
+      playerShipPositions: (game.player1.id == playerId
+          ? game.board1.getAllShipPositions()
+          : game.board2.getAllShipPositions()),
+      opponentShipPositions: hitPositions, // Les positions de l'adversaire touchées = hitPositions
       gameDuration: duration,
       recordedAt: DateTime.now(),
       won: won,

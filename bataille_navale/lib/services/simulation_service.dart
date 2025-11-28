@@ -94,44 +94,58 @@ class SimulationService {
       // Utiliser la seed pour des tests reproductibles
     }
 
-    var board2 = generateRandomBoard();
+    // Créer les boards pour les deux joueurs
+    var playerBoard = generateRandomBoard(); // Board du joueur (défense)
+    var opponentBoard = generateRandomBoard(); // Board de l'adversaire (cibles)
 
-    int player1Hits = 0;
-    int player1Misses = 0;
-    final hitPositions1 = <(int, int)>[];
-    final missPositions1 = <(int, int)>[];
+    int playerHits = 0;
+    int playerMisses = 0;
+    final hitPositions = <(int, int)>[];
+    final missPositions = <(int, int)>[];
+    final opponentShipsDestroyed = <(int, int)>[];
 
     int totalMoves = 0;
     bool gameEnded = false;
 
+    // Capturer les positions initiales des navires du joueur
+    final playerShipPositions = <(int, int)>[];
+    for (int row = 0; row < Board.size; row++) {
+      for (int col = 0; col < Board.size; col++) {
+        if (playerBoard.hasShip(row, col)) {
+          playerShipPositions.add((row, col));
+        }
+      }
+    }
+
     // Simulation simple et rapide
     while (!gameEnded && totalMoves < 200) {
-      // Joueur 1 attaque
+      // Joueur attaque le board de l'adversaire
       int row = _random.nextInt(Board.size);
       int col = _random.nextInt(Board.size);
 
-      if (board2.hasShip(row, col)) {
-        player1Hits++;
-        hitPositions1.add((row, col));
+      if (opponentBoard.hasShip(row, col)) {
+        playerHits++;
+        hitPositions.add((row, col));
+        opponentShipsDestroyed.add((row, col));
         
-        // Marquer comme touché sur le board
-        final cell = board2.getCell(row, col);
+        // Marquer comme touché sur le board de l'adversaire
+        final cell = opponentBoard.getCell(row, col);
         if (cell.state == CellState.empty) {
-          board2 = board2.updateCell(row, col, CellState.hit);
+          opponentBoard = opponentBoard.updateCell(row, col, CellState.hit);
         }
       } else {
-        player1Misses++;
-        missPositions1.add((row, col));
+        playerMisses++;
+        missPositions.add((row, col));
         
-        // Marquer comme manqué sur le board
-        final cell = board2.getCell(row, col);
+        // Marquer comme manqué sur le board de l'adversaire
+        final cell = opponentBoard.getCell(row, col);
         if (cell.state == CellState.empty) {
-          board2 = board2.updateCell(row, col, CellState.miss);
+          opponentBoard = opponentBoard.updateCell(row, col, CellState.miss);
         }
       }
 
-      // Vérifier si tous les navires sont coulés
-      if (board2.allShipsSunk) {
+      // Vérifier si tous les navires de l'adversaire sont coulés
+      if (opponentBoard.allShipsSunk) {
         gameEnded = true;
       }
 
@@ -139,23 +153,29 @@ class SimulationService {
     }
 
     // Déterminer le gagnant
-    final player1Won = board2.allShipsSunk;
-    final player1Shots = player1Hits + player1Misses;
+    final playerWon = opponentBoard.allShipsSunk;
+    final totalShots = playerHits + playerMisses;
+
+    // Calculer la durée de manière plus réaliste basée sur les coups réels
+    // Plus de coups = partie plus longue (min 5s, max 180s)
+    final durationSeconds = (totalShots * 0.5).clamp(5, 180).toInt();
 
     return GameStatistics(
       gameId: 'sim_${DateTime.now().millisecondsSinceEpoch}_${_random.nextInt(10000)}',
       playerId: playerId,
       opponentId: opponentId,
-      totalMoves: player1Shots,
-      hits: player1Hits,
-      misses: player1Misses,
-      hitPositions: hitPositions1,
-      missPositions: missPositions1,
-      gameDuration: Duration(seconds: totalMoves * 2),
+      totalMoves: totalShots,
+      hits: playerHits,
+      misses: playerMisses,
+      hitPositions: hitPositions,
+      missPositions: missPositions,
+      playerShipPositions: playerShipPositions,
+      opponentShipPositions: opponentShipsDestroyed,
+      gameDuration: Duration(seconds: durationSeconds),
       recordedAt: DateTime.now(),
-      won: player1Won,
-      shipsDestroyed: player1Hits ~/ 2, // Approximation
-      accuracy: player1Shots > 0 ? (player1Hits / player1Shots) * 100 : 0,
+      won: playerWon,
+      shipsDestroyed: opponentShipsDestroyed.length ~/ 2, // Approximation (chaque navire = 2-5 positions)
+      accuracy: totalShots > 0 ? (playerHits / totalShots) * 100 : 0,
     );
   }
 

@@ -1,8 +1,5 @@
 import 'package:bataille_navale/bataille_navale.dart';
 import 'package:test/test.dart';
-import 'package:bataille_navale/models/index.dart';
-import 'package:bataille_navale/services/game_service.dart';
-import 'package:bataille_navale/ai/genetic_algorithm.dart';
 import 'dart:math';
 
 void main() {
@@ -251,6 +248,8 @@ void main() {
           misses: 5,
           hitPositions: [(1, 1), (2, 2), (3, 3)],
           missPositions: [(0, 0), (1, 0)],
+          playerShipPositions: [(0, 0), (0, 1), (0, 2), (0, 3), (0, 4)],
+          opponentShipPositions: [(5, 5), (6, 6), (7, 7), (8, 8), (9, 9)],
           gameDuration: Duration(minutes: 5),
           recordedAt: DateTime.now(),
           won: true,

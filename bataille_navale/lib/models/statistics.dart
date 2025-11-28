@@ -9,6 +9,8 @@ class GameStatistics extends Equatable {
   final int misses;
   final List<(int, int)> hitPositions; // Positions des coups touchés
   final List<(int, int)> missPositions; // Positions des coups manqués
+  final List<(int, int)> playerShipPositions; // Positions des navires du joueur
+  final List<(int, int)> opponentShipPositions; // Positions des navires de l'adversaire détruites
   final Duration gameDuration;
   final DateTime recordedAt;
   final bool won;
@@ -24,6 +26,8 @@ class GameStatistics extends Equatable {
     required this.misses,
     required this.hitPositions,
     required this.missPositions,
+    required this.playerShipPositions,
+    required this.opponentShipPositions,
     required this.gameDuration,
     required this.recordedAt,
     required this.won,
@@ -45,6 +49,12 @@ class GameStatistics extends Equatable {
       'missPositions': missPositions
           .map((pos) => {'row': pos.$1, 'col': pos.$2})
           .toList(),
+      'playerShipPositions': playerShipPositions
+          .map((pos) => {'row': pos.$1, 'col': pos.$2})
+          .toList(),
+      'opponentShipPositions': opponentShipPositions
+          .map((pos) => {'row': pos.$1, 'col': pos.$2})
+          .toList(),
       'gameDuration': gameDuration.inSeconds,
       'recordedAt': recordedAt.toIso8601String(),
       'won': won,
@@ -54,24 +64,60 @@ class GameStatistics extends Equatable {
   }
 
   factory GameStatistics.fromJson(Map<String, dynamic> json) {
+    // Helper functions to safely parse values
+    int parseInt(dynamic value) {
+      if (value is int) return value;
+      if (value is double) return value.toInt();
+      if (value is String) return int.tryParse(value) ?? 0;
+      return 0;
+    }
+
+    double parseDouble(dynamic value) {
+      if (value is double) return value;
+      if (value is int) return value.toDouble();
+      if (value is String) return double.tryParse(value) ?? 0.0;
+      return 0.0;
+    }
+
+    bool parseBool(dynamic value) {
+      if (value is bool) return value;
+      if (value is String) return value.toLowerCase() == 'true';
+      return false;
+    }
+
+    List<(int, int)> parsePositions(dynamic value) {
+      if (value is! List) return [];
+      return (value as List)
+          .map((pos) {
+            if (pos is Map) {
+              return (
+                parseInt(pos['row']),
+                parseInt(pos['col']),
+              );
+            }
+            return (0, 0);
+          })
+          .toList();
+    }
+
     return GameStatistics(
-      gameId: json['gameId'] as String,
-      playerId: json['playerId'] as String,
-      opponentId: json['opponentId'] as String,
-      totalMoves: json['totalMoves'] as int,
-      hits: json['hits'] as int,
-      misses: json['misses'] as int,
-      hitPositions: (json['hitPositions'] as List)
-          .map((pos) => (pos['row'] as int, pos['col'] as int))
-          .toList(),
-      missPositions: (json['missPositions'] as List)
-          .map((pos) => (pos['row'] as int, pos['col'] as int))
-          .toList(),
-      gameDuration: Duration(seconds: json['gameDuration'] as int),
-      recordedAt: DateTime.parse(json['recordedAt'] as String),
-      won: json['won'] as bool,
-      shipsDestroyed: json['shipsDestroyed'] as int,
-      accuracy: json['accuracy'] as double,
+      gameId: json['gameId']?.toString() ?? 'unknown',
+      playerId: json['playerId']?.toString() ?? 'unknown',
+      opponentId: json['opponentId']?.toString() ?? 'unknown',
+      totalMoves: parseInt(json['totalMoves']),
+      hits: parseInt(json['hits']),
+      misses: parseInt(json['misses']),
+      hitPositions: parsePositions(json['hitPositions']),
+      missPositions: parsePositions(json['missPositions']),
+      playerShipPositions: parsePositions(json['playerShipPositions']),
+      opponentShipPositions: parsePositions(json['opponentShipPositions']),
+      gameDuration: Duration(seconds: parseInt(json['gameDuration'])),
+      recordedAt: json['recordedAt'] != null 
+          ? DateTime.parse(json['recordedAt'].toString())
+          : DateTime.now(),
+      won: parseBool(json['won']),
+      shipsDestroyed: parseInt(json['shipsDestroyed']),
+      accuracy: parseDouble(json['accuracy']),
     );
   }
 
@@ -85,6 +131,8 @@ class GameStatistics extends Equatable {
         misses,
         hitPositions,
         missPositions,
+        playerShipPositions,
+        opponentShipPositions,
         gameDuration,
         recordedAt,
         won,
