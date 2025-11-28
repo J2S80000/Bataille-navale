@@ -1,0 +1,31 @@
+# Annuler l'ajout de tous les fichiers
+git reset
+
+# Créer un fichier .gitignore complet pour Flutter
+echo "# Flutter" > .gitignore
+echo ".dart_tool/" >> .gitignore
+echo ".pub/" >> .gitignore
+echo "build/" >> .gitignore
+echo ".flutter-plugins" >> .gitignore
+echo ".flutter-plugins-dependencies" >> .gitignore
+echo ".metadata" >> .gitignore
+echo "*.iml" >> .gitignore
+echo ".idea/" >> .gitignore
+echo "*.iws" >> .gitignore
+echo "*.ipr" >> .gitignore
+
+# Fichiers OS
+echo ".DS_Store" >> .gitignore
+echo "Thumbs.db" >> .gitignore
+
+# Fichiers temporaires
+echo "*.pyc" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo ".history/" >> .gitignore
+
+# Fichiers de build spécifiques
+echo "bataille_navale/android/" >> .gitignore
+echo "bataille_navale/ios/" >> .gitignore
+echo "bataille_navale/build/" >> .gitignore
+echo "bataille_navale/.dart_tool/" >> .gitignore
+echo "bataille_navale/.pub/" >> .gitignore

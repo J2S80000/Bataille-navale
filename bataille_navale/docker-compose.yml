@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: bataille_navale_mongodb
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_DATABASE: bataille_navale
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - bataille_navale
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: bataille_navale_mongo_express
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password
+      ME_CONFIG_MONGODB_URL: mongodb://admin:password@mongodb:27017/
+      ME_CONFIG_BASICAUTH: false
+    depends_on:
+      - mongodb
+    networks:
+      - bataille_navale
+
+  api:
+    image: node:18-alpine
+    container_name: bataille_navale_api
+    ports:
+      - "3000:3000"
+    working_dir: /app
+    volumes:
+      - ./api:/app
+    environment:
+      PORT: 3000
+      MONGO_URL: mongodb://admin:password@mongodb:27017/
+    command: sh -c "npm install && npm start"
+    depends_on:
+      - mongodb
+    networks:
+      - bataille_navale
+
+volumes:
+  mongodb_data:
+
+networks:
+  bataille_navale:
+    driver: bridge
+
