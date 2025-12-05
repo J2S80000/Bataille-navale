@@ -1,10 +1,19 @@
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:html' as html show window;
 import '../models/statistics.dart';
 
 class MongoDBService {
-  static const String _baseUrl = 'http://localhost:3000/api';
+  // Pour le web, utilise l'URL du host machine
+  static String get _baseUrl {
+    if (kIsWeb) {
+      // Sur le web, on peut pas utiliser localhost - faut utiliser l'URL actuelle
+      final hostname = html.window.location.hostname ?? 'localhost';
+      return 'http://$hostname:3000/api';
+    }
+    return 'http://localhost:3000/api';
+  }
   static const Duration _timeout = Duration(seconds: 10);
 
   /// Initialize connection to MongoDB
