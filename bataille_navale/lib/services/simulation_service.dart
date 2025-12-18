@@ -84,7 +84,7 @@ class SimulationService {
     return true;
   }
 
-  /// Simule une partie complète entre deux joueurs
+  /// Simule une partie complète entre deux joueurs avec IA intelligente
   static GameStatistics simulateGame({
     required String playerId,
     required String opponentId,
@@ -103,6 +103,12 @@ class SimulationService {
     final hitPositions = <(int, int)>[];
     final missPositions = <(int, int)>[];
     final opponentShipsDestroyed = <(int, int)>[];
+    
+    // Set pour tracker les positions déjà tirées
+    final shotPositions = <(int, int)>{};
+    
+    // Stratégie aléatoire du joueur (varie par partie)
+    final strategy = _random.nextInt(4); // 0=random, 1=hunt, 2=grid, 3=intelligent
 
     int totalMoves = 0;
     bool gameEnded = false;
@@ -117,18 +123,39 @@ class SimulationService {
       }
     }
 
-    // Simulation simple et rapide
-    while (!gameEnded && totalMoves < 200) {
+    // Simulation avec IA
+    while (!gameEnded && totalMoves < 250) {
       // Joueur attaque le board de l'adversaire
-      int row = _random.nextInt(Board.size);
-      int col = _random.nextInt(Board.size);
+      late (int, int) target;
+
+      // Sélectionner la cible basée sur la stratégie
+      if (strategy == 0) {
+        // Stratégie 1: Aléatoire pur
+        target = _getRandomTarget(shotPositions);
+      } else if (strategy == 1) {
+        // Stratégie 2: Hunt & Destroy (cherche les navires)
+        target = _getHuntTarget(opponentBoard, hitPositions, shotPositions);
+      } else if (strategy == 2) {
+        // Stratégie 3: Grille (motif systématique)
+        target = _getGridTarget(shotPositions);
+      } else {
+        // Stratégie 4: Intelligente (mélange)
+        if (hitPositions.length < 3) {
+          target = _getGridTarget(shotPositions);
+        } else {
+          target = _getHuntTarget(opponentBoard, hitPositions, shotPositions);
+        }
+      }
+
+      shotPositions.add(target);
+      final (row, col) = target;
 
       if (opponentBoard.hasShip(row, col)) {
         playerHits++;
         hitPositions.add((row, col));
         opponentShipsDestroyed.add((row, col));
         
-        // Marquer comme touché sur le board de l'adversaire
+        // Marquer comme touché
         final cell = opponentBoard.getCell(row, col);
         if (cell.state == CellState.empty) {
           opponentBoard = opponentBoard.updateCell(row, col, CellState.hit);
@@ -137,7 +164,7 @@ class SimulationService {
         playerMisses++;
         missPositions.add((row, col));
         
-        // Marquer comme manqué sur le board de l'adversaire
+        // Marquer comme manqué
         final cell = opponentBoard.getCell(row, col);
         if (cell.state == CellState.empty) {
           opponentBoard = opponentBoard.updateCell(row, col, CellState.miss);
@@ -156,9 +183,8 @@ class SimulationService {
     final playerWon = opponentBoard.allShipsSunk;
     final totalShots = playerHits + playerMisses;
 
-    // Calculer la durée de manière plus réaliste basée sur les coups réels
-    // Plus de coups = partie plus longue (min 5s, max 180s)
-    final durationSeconds = (totalShots * 0.5).clamp(5, 180).toInt();
+    // Durée variable selon la performance
+    final durationSeconds = _calculateGameDuration(playerWon, totalShots);
 
     return GameStatistics(
       gameId: 'sim_${DateTime.now().millisecondsSinceEpoch}_${_random.nextInt(10000)}',
@@ -174,9 +200,117 @@ class SimulationService {
       gameDuration: Duration(seconds: durationSeconds),
       recordedAt: DateTime.now(),
       won: playerWon,
-      shipsDestroyed: opponentShipsDestroyed.length ~/ 2, // Approximation (chaque navire = 2-5 positions)
+      shipsDestroyed: _countDestroyedShips(opponentBoard),
       accuracy: totalShots > 0 ? (playerHits / totalShots) * 100 : 0,
     );
+  }
+
+  /// Obtient une cible aléatoire non encore tirée
+  static (int, int) _getRandomTarget(Set<(int, int)> shotPositions) {
+    late (int, int) target;
+    int attempts = 0;
+    const maxAttempts = 50;
+    
+    do {
+      target = (_random.nextInt(Board.size), _random.nextInt(Board.size));
+      attempts++;
+      
+      // Si on a trop d'essais, retourner n'importe quelle position
+      if (attempts > maxAttempts) {
+        for (int r = 0; r < Board.size; r++) {
+          for (int c = 0; c < Board.size; c++) {
+            if (!shotPositions.contains((r, c))) {
+              return (r, c);
+            }
+          }
+        }
+        break;
+      }
+    } while (shotPositions.contains(target));
+    
+    return target;
+  }
+
+  /// Stratégie Hunt & Destroy - cherche autour des hits
+  static (int, int) _getHuntTarget(
+    Board board,
+    List<(int, int)> hitPositions,
+    Set<(int, int)> shotPositions,
+  ) {
+    // 70% de chance de chercher autour d'un hit existant
+    if (hitPositions.isNotEmpty && _random.nextDouble() < 0.7) {
+      final lastHit = hitPositions.last;
+      final directions = [
+        (lastHit.$1 - 1, lastHit.$2), // Haut
+        (lastHit.$1 + 1, lastHit.$2), // Bas
+        (lastHit.$1, lastHit.$2 - 1), // Gauche
+        (lastHit.$1, lastHit.$2 + 1), // Droite
+      ];
+
+      final validDirections = directions.where((pos) {
+        return pos.$1 >= 0 &&
+            pos.$1 < Board.size &&
+            pos.$2 >= 0 &&
+            pos.$2 < Board.size &&
+            !shotPositions.contains(pos);
+      }).toList();
+
+      if (validDirections.isNotEmpty) {
+        return validDirections[_random.nextInt(validDirections.length)];
+      }
+    }
+
+    return _getRandomTarget(shotPositions);
+  }
+
+  /// Stratégie Grille - tire selon un motif régulier
+  static (int, int) _getGridTarget(Set<(int, int)> shotPositions) {
+    // Utilise un motif en grille (tous les 2-3 carrés)
+    late (int, int) target;
+    int attempts = 0;
+    const maxAttempts = 50;
+    
+    do {
+      final row = _random.nextInt(5) * 2 + _random.nextInt(2);
+      final col = _random.nextInt(5) * 2 + _random.nextInt(2);
+      target = (row, col);
+      attempts++;
+      
+      // Si on a trop d'essais, tomber sur Random
+      if (attempts > maxAttempts) {
+        return _getRandomTarget(shotPositions);
+      }
+    } while (shotPositions.contains(target) || target.$1 >= Board.size || target.$2 >= Board.size);
+    
+    return target;
+  }
+
+  /// Calcule la durée du jeu de manière variable
+  static int _calculateGameDuration(bool won, int totalShots) {
+    // Durée variable selon le résultat et l'efficacité
+    int baseDuration = (totalShots * 0.3).toInt();
+    
+    if (won) {
+      // Si victoire, durée plus courte (joueur efficace)
+      baseDuration = ((totalShots * 0.2) + _random.nextInt(15)).toInt();
+    } else {
+      // Si défaite ou non terminé, durée plus longue
+      baseDuration = ((totalShots * 0.4) + _random.nextInt(30)).toInt();
+    }
+    
+    return baseDuration.clamp(5, 180);
+  }
+
+  /// Compte le nombre réel de navires détruits
+  static int _countDestroyedShips(Board board) {
+    int destroyedCount = 0;
+    for (final ship in board.ships) {
+      if (ship.cells.every((cell) => 
+          board.getCell(cell.$1, cell.$2).state == CellState.hit)) {
+        destroyedCount++;
+      }
+    }
+    return destroyedCount;
   }
 
   /// Simule n parties

@@ -141,18 +141,19 @@ class MongoDBService {
   }
 
   /// Get statistics for a specific player - loads ALL records with pagination
-  Future<List<GameStatistics>> getPlayerStatistics(String playerId) async {
+  Future<List<GameStatistics>> getPlayerStatistics(String playerId, {int maxRecords = 1000}) async {
     if (!kIsWeb) return [];
 
     try {
-      print('[MONGODB] Fetching ALL stats for playerId: $playerId');
+      print('[MONGODB] Fetching stats for playerId: $playerId (max: $maxRecords)');
       
       List<GameStatistics> allStats = [];
       int skip = 0;
       const int limit = 5000; // Max per request
       bool hasMore = true;
+      int totalRecords = 0;
 
-      while (hasMore) {
+      while (hasMore && totalRecords < maxRecords) {
         print('[MONGODB] Fetching batch: skip=$skip, limit=$limit');
         
         final response = await http.get(
@@ -177,17 +178,19 @@ class MongoDBService {
             print('[MONGODB] Response: ${data.length} records, total=$total, hasMore=$hasMore');
           }
           
-          // Convertir et ajouter
+          // Convertir et ajouter (limiter au max)
           for (final item in data) {
+            if (totalRecords >= maxRecords) break;
             try {
               final stat = GameStatistics.fromJson(item as Map<String, dynamic>);
               allStats.add(stat);
+              totalRecords++;
             } catch (e) {
               print('[MONGODB] ⚠ Error parsing item: $e');
             }
           }
           
-          if (!hasMore) break;
+          if (!hasMore || totalRecords >= maxRecords) break;
           skip += limit;
         } else {
           print('[MONGODB] Status ${response.statusCode}: ${response.body}');
@@ -195,7 +198,7 @@ class MongoDBService {
         }
       }
       
-      print('[MONGODB] ✓ Loaded ${allStats.length} total records');
+      print('[MONGODB] ✓ Loaded ${allStats.length} records (limited to $maxRecords)');
       return allStats;
     } catch (e, stackTrace) {
       print('⚠ Failed to fetch player statistics: $e');

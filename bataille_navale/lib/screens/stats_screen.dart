@@ -25,6 +25,8 @@ class _StatsScreenState extends State<StatsScreen> {
   PlayerStatisticsAggregate? playerStats;
   List<GameStatistics>? gameStats;
   bool isLoading = false;
+  int totalLoadedGames = 0; // Suivi du nombre de jeux chargés
+  bool isLoadingMore = false; // Suivi du chargement supplémentaire
 
   @override
   void initState() {
@@ -43,31 +45,36 @@ class _StatsScreenState extends State<StatsScreen> {
     try {
       print('[STATS] Chargement des stats pour ${widget.playerId}...');
       
-      // Charger depuis MongoDB au lieu de Firebase
+      // Charger les 1000 premières parties depuis MongoDB
       await mongoService.initialize();
-      final allStats = await mongoService.getPlayerStatistics(widget.playerId);
+      final first1000 = await mongoService.getPlayerStatistics(widget.playerId, maxRecords: 1000);
       
-      print('[STATS] ${allStats.length} parties chargées');
+      print('[STATS] ${first1000.length} parties chargées (max 1000)');
 
-      if (allStats.isEmpty) {
+      if (first1000.isEmpty) {
         print('[STATS] ⚠️ Aucune partie trouvée pour $widget.playerId');
         setState(() {
           playerStats = null;
           gameStats = [];
           isLoading = false;
+          totalLoadedGames = 0;
         });
         return;
       }
 
-      final aggregate = await analytics.buildPlayerStatistics(widget.playerId, allStats);
+      // Charger les stats agrégées avec les 1000 premières
+      print('[STATS] Traitement des ${first1000.length} premières statistiques...');
+      final aggregate = await analytics.buildPlayerStatistics(widget.playerId, first1000);
 
       print('[STATS] ✅ Stats agrégées: ${aggregate.totalGames} parties');
       
       setState(() {
         playerStats = aggregate;
-        gameStats = allStats;
+        gameStats = first1000;
         isLoading = false;
+        totalLoadedGames = first1000.length;
       });
+      
     } catch (e) {
       print('❌ Erreur chargement stats: $e');
       setState(() {
@@ -75,6 +82,261 @@ class _StatsScreenState extends State<StatsScreen> {
         gameStats = [];
         isLoading = false;
       });
+    }
+  }
+
+  /// Charge les parties supplémentaires en arrière-plan par batches de 1000
+  Future<void> _loadMoreGamesInBackground(
+    MongoDBService mongoService,
+    AnalyticsService analytics,
+    List<GameStatistics> initialStats,
+  ) async {
+    try {
+      print('[STATS] Chargement des parties supplémentaires par batches de 1000...');
+      
+      int currentLimit = 2000; // Commencer à 2000 pour avoir le prochain batch
+      int previousCount = initialStats.length;
+      int maxAttempts = 50; // Limiter à 50 batches (50 000 parties max)
+      int attempts = 0;
+      
+      // Charger progressivement par batches de 1000
+      while (attempts < maxAttempts) {
+        attempts++;
+        print('[STATS] Batch $attempts: Chargement jusquà $currentLimit parties...');
+        
+        // Libérer le thread principal AVANT de faire l'appel réseau
+        await Future.delayed(Duration(milliseconds: 100));
+        
+        final moreStats = await mongoService.getPlayerStatistics(widget.playerId, maxRecords: currentLimit);
+        
+        if (moreStats.length <= previousCount) {
+          // Pas de nouvelles données
+          print('[STATS] ✅ Toutes les données chargées: ${previousCount} parties au total');
+          break;
+        }
+        
+        final newCount = moreStats.length - previousCount;
+        print('[STATS] 📊 +$newCount parties chargées (total: ${moreStats.length})');
+        
+        // Mettre à jour l'UI avec mise à jour granulaire
+        if (mounted) {
+          try {
+            // Traiter les nouvelles données hors du thread principal
+            final updatedAggregate = await analytics.buildPlayerStatistics(widget.playerId, moreStats);
+            
+            // Libérer le thread AVANT setState
+            await Future.microtask(() {});
+            
+            if (mounted) {
+              setState(() {
+                gameStats = moreStats;
+                playerStats = updatedAggregate;
+                totalLoadedGames = moreStats.length;
+              });
+              
+              // Notifier l'utilisateur du progrès (sans bloquer)
+              ScaffoldMessenger.of(context).clearSnackBars();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('📊 Batch $attempts: ${moreStats.length} parties (+$newCount)'),
+                  duration: Duration(milliseconds: 500),
+                ),
+              );
+            }
+          } catch (e) {
+            print('[STATS] ⚠️ Erreur lors du traitement du batch $attempts: $e');
+          }
+        }
+        
+        previousCount = moreStats.length;
+        currentLimit += 1000; // Charger les 1000 suivantes
+        
+        // Délai plus court mais avec libération du thread
+        await Future.delayed(Duration(milliseconds: 200));
+        await Future.microtask(() {}); // Forcer le rendu
+      }
+      
+      if (attempts >= maxAttempts) {
+        print('[STATS] ⚠️ Limite de batches atteinte (${attempts * 1000} parties max)');
+      }
+    } catch (e) {
+      print('[STATS] ❌ Erreur lors du chargement des parties supplémentaires: $e');
+    }
+  }
+
+  /// Charge uniquement les nouvelles données depuis la dernière mise à jour
+  Future<void> _loadNewGamesOnly() async {
+    if (isLoadingMore || gameStats == null) return;
+    
+    setState(() => isLoadingMore = true);
+    final mongoService = MongoDBService();
+    final analytics = context.read<AnalyticsService>();
+    
+    try {
+      final currentCount = gameStats!.length;
+      print('[STATS] Recherche de nouvelles données depuis $currentCount parties...');
+      
+      // Charger toutes les données
+      await mongoService.initialize();
+      final allStats = await mongoService.getPlayerStatistics(widget.playerId, maxRecords: currentCount + 1000);
+      
+      final newCount = allStats.length - currentCount;
+      
+      if (newCount > 0) {
+        print('[STATS] ✨ ${newCount} nouvelles parties trouvées!');
+        
+        // Recalculer les stats agrégées
+        final updatedAggregate = await analytics.buildPlayerStatistics(widget.playerId, allStats);
+        
+        setState(() {
+          gameStats = allStats;
+          playerStats = updatedAggregate;
+          totalLoadedGames = allStats.length;
+          isLoadingMore = false;
+        });
+        
+        // Afficher notification
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✨ ${newCount} nouvelle${newCount > 1 ? 's' : ''} partie${newCount > 1 ? 's' : ''} ajoutée${newCount > 1 ? 's' : ''}!'),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        setState(() => isLoadingMore = false);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ Aucune nouvelle donnée'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => isLoadingMore = false);
+      print('[STATS] ❌ Erreur lors du chargement des nouvelles données: $e');
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ Erreur lors de la récupération des données'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// Charge les 1000 prochaines parties
+  Future<void> _loadNext1000() async {
+    if (isLoadingMore || gameStats == null) return;
+    
+    setState(() => isLoadingMore = true);
+    final mongoService = MongoDBService();
+    final analytics = context.read<AnalyticsService>();
+    
+    try {
+      final currentCount = gameStats!.length;
+      final nextLimit = currentCount + 1000;
+      print('[STATS] Chargement des parties $currentCount à $nextLimit...');
+      
+      await mongoService.initialize();
+      final allStats = await mongoService.getPlayerStatistics(widget.playerId, maxRecords: nextLimit);
+      
+      final newCount = allStats.length - currentCount;
+      
+      if (newCount > 0) {
+        print('[STATS] ✨ ${newCount} parties chargées!');
+        
+        final updatedAggregate = await analytics.buildPlayerStatistics(widget.playerId, allStats);
+        
+        setState(() {
+          gameStats = allStats;
+          playerStats = updatedAggregate;
+          totalLoadedGames = allStats.length;
+          isLoadingMore = false;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('➕ ${newCount} parties chargées! (Total: ${allStats.length})'),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.blue,
+          ),
+        );
+      } else {
+        setState(() => isLoadingMore = false);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ Fin des données'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => isLoadingMore = false);
+      print('[STATS] ❌ Erreur: $e');
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ Erreur lors du chargement'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// Charge TOUTES les parties
+  Future<void> _loadAll() async {
+    if (isLoadingMore || gameStats == null) return;
+    
+    setState(() => isLoadingMore = true);
+    final mongoService = MongoDBService();
+    final analytics = context.read<AnalyticsService>();
+    
+    try {
+      print('[STATS] Chargement de TOUTES les parties...');
+      
+      await mongoService.initialize();
+      final allStats = await mongoService.getPlayerStatistics(widget.playerId, maxRecords: 999999);
+      
+      final newCount = allStats.length - gameStats!.length;
+      
+      if (newCount >= 0) {
+        print('[STATS] 📊 ${allStats.length} parties chargées au total!');
+        
+        final updatedAggregate = await analytics.buildPlayerStatistics(widget.playerId, allStats);
+        
+        setState(() {
+          gameStats = allStats;
+          playerStats = updatedAggregate;
+          totalLoadedGames = allStats.length;
+          isLoadingMore = false;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🎯 Toutes les ${allStats.length} parties chargées!'),
+            duration: Duration(seconds: 3),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        setState(() => isLoadingMore = false);
+      }
+    } catch (e) {
+      setState(() => isLoadingMore = false);
+      print('[STATS] ❌ Erreur: $e');
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ Erreur lors du chargement'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -87,7 +349,21 @@ class _StatsScreenState extends State<StatsScreen> {
         builder: (context, snapshot) {
           // Afficher le loader pendant le chargement initial
           if (snapshot.connectionState == ConnectionState.waiting && playerStats == null) {
-            return Center(child: CircularProgressIndicator());
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Chargement des statistiques...'),
+                  SizedBox(height: 8),
+                  Text(
+                    '(Cette opération peut prendre quelques secondes)',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+            );
           }
 
           // Afficher message si aucune donnée
@@ -134,22 +410,66 @@ class _StatsScreenState extends State<StatsScreen> {
                 children: [
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Statistiques',
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                          ),
-                          Text(
-                            '${gameStats!.length} parties',
-                            style: TextStyle(fontSize: 12, color: Colors.grey),
-                          ),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Statistiques',
+                              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              '${gameStats!.length} parties',
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
                       ),
+                      SizedBox(width: 8),
+                      // Bouton: Charger 1000 prochaines
+                      Tooltip(
+                        message: 'Charger 1000 prochaines parties',
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            backgroundColor: Colors.blue.shade600,
+                          ),
+                          onPressed: isLoadingMore ? null : _loadNext1000,
+                          icon: isLoadingMore 
+                            ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                            : Icon(Icons.add, size: 18),
+                          label: Text(
+                            isLoadingMore ? '...' : '+1K',
+                            style: TextStyle(fontSize: 11),
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 6),
+                      // Bouton: Charger tout
+                      Tooltip(
+                        message: 'Charger toutes les parties',
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            backgroundColor: Colors.green.shade600,
+                          ),
+                          onPressed: isLoadingMore ? null : _loadAll,
+                          icon: isLoadingMore 
+                            ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                            : Icon(Icons.cloud_download, size: 18),
+                          label: Text(
+                            isLoadingMore ? '...' : 'Tout',
+                            style: TextStyle(fontSize: 11),
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 6),
+                      // Bouton de rafraîchissement
                       IconButton(
                         icon: Icon(Icons.refresh),
+                        tooltip: 'Rafraîchir toutes les données',
                         onPressed: () {
                           print('[STATS] Rafraîchissement manuel (bouton)...');
                           setState(() {
@@ -930,14 +1250,112 @@ class _StatsScreenState extends State<StatsScreen> {
       allMisses.addAll(game.missPositions);
     }
 
+    print('[HEATMAP] Parties: ${gameStats!.length}');
+    print('[HEATMAP] Total hits: ${allHits.length}');
+    print('[HEATMAP] Total misses: ${allMisses.length}');
+    
+    if (gameStats!.isNotEmpty) {
+      print('[HEATMAP] Premier jeu - hits: ${gameStats!.first.hitPositions.length}, misses: ${gameStats!.first.missPositions.length}');
+      print('[HEATMAP] Premier jeu - hitPositions: ${gameStats!.first.hitPositions.take(5)}');
+      print('[HEATMAP] Premier jeu - missPositions: ${gameStats!.first.missPositions.take(5)}');
+    }
+
+    // Créer une heatmap 10x10 simple si le widget ne marche pas
+    if (allHits.isEmpty && allMisses.isEmpty) {
+      return Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Heatmap d\'attaque - ${gameStats!.length} parties',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Aucune donnée de coups',
+                style: TextStyle(fontSize: 12, color: Colors.red),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Card(
       child: Padding(
         padding: EdgeInsets.all(16),
-        child: AttackHeatmapWidget(
-          hitPositions: allHits,
-          missPositions: allMisses,
-          title: 'Heatmap d\'attaque - ${gameStats!.length} parties',
-          cellSize: 22,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Heatmap d\'attaque - ${gameStats!.length} parties',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '${allHits.length} touchers, ${allMisses.length} manqués',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            SizedBox(height: 16),
+            // Grille simple 10x10
+            GridView.builder(
+              shrinkWrap: true,
+              physics: NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 10),
+              itemCount: 100,
+              itemBuilder: (context, index) {
+                final row = index ~/ 10;
+                final col = index % 10;
+                
+                // Compter les hits et misses à cette position
+                final hitCount = allHits.where((p) => p.$1 == row && p.$2 == col).length;
+                final missCount = allMisses.where((p) => p.$1 == row && p.$2 == col).length;
+                
+                Color cellColor;
+                if (hitCount > 0) {
+                  // Dégradé du jaune au rouge selon l'intensité
+                  final intensity = (hitCount*6 / (hitCount + missCount)).clamp(0, 1) as double;
+                  cellColor = Color.lerp(Colors.yellow, Colors.red, intensity)!;
+                } else if (missCount > 0) {
+                  cellColor = Colors.blue.shade200;
+                } else {
+                  cellColor = Colors.grey.shade300;
+                }
+                
+                return Container(
+                  margin: EdgeInsets.all(1),
+                  decoration: BoxDecoration(
+                    color: cellColor,
+                    border: Border.all(color: Colors.grey.shade400, width: 0.5),
+                  ),
+                  child: Center(
+                    child: hitCount > 0 
+                      ? Text(
+                          hitCount.toString(),
+                          style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                        )
+                      : SizedBox.shrink(),
+                  ),
+                );
+              },
+            ),
+            SizedBox(height: 16),
+            // Légende
+            Row(
+              children: [
+                Container(width: 20, height: 20, color: Colors.yellow, margin: EdgeInsets.only(right: 8)),
+                Text('Coups', style: TextStyle(fontSize: 11)),
+                SizedBox(width: 16),
+                Container(width: 20, height: 20, color: Colors.red, margin: EdgeInsets.only(right: 8)),
+                Text('Nombreux coups', style: TextStyle(fontSize: 11)),
+                SizedBox(width: 16),
+                Container(width: 20, height: 20, color: Colors.blue, margin: EdgeInsets.only(right: 8)),
+                Text('Manqués', style: TextStyle(fontSize: 11)),
+              ],
+            ),
+          ],
         ),
       ),
     );
